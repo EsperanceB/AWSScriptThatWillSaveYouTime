@@ -1,0 +1,206 @@
+#!/bin/bash
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo -e "${BLUE}=== AWS SAGEMAKER MULTI-REGION RESOURCE SCANNER ===${NC}"
+echo "Scanning all regions for SageMaker resources..."
+echo ""
+
+# Get all available regions
+REGIONS=$(aws ec2 describe-regions --query 'Regions[].RegionName' --output text)
+
+# Initialize counters
+TOTAL_ARTIFACTS=0
+TOTAL_MODELS=0
+TOTAL_ENDPOINTS=0
+TOTAL_EXPERIMENTS=0
+TOTAL_TRIALS=0
+TOTAL_TRIAL_COMPONENTS=0
+TOTAL_ASSOCIATIONS=0
+TOTAL_S3_BUCKETS=0
+REGIONS_WITH_RESOURCES=0
+
+# Function to check resources in a region
+check_region() {
+    local region=$1
+    local has_resources=false
+    
+    echo -e "${YELLOW}=== Checking Region: $region ===${NC}"
+    
+    # Check SageMaker Artifacts
+    local artifacts=$(aws sagemaker list-artifacts --region $region --query 'length(ArtifactSummaries)' --output text 2>/dev/null)
+    if [[ "$artifacts" != "0" && "$artifacts" != "None" ]]; then
+        echo -e "${RED}  Artifacts: $artifacts${NC}"
+        aws sagemaker list-artifacts --region $region --output table 2>/dev/null
+        TOTAL_ARTIFACTS=$((TOTAL_ARTIFACTS + artifacts))
+        has_resources=true
+    fi
+    
+    # Check Models
+    local models=$(aws sagemaker list-models --region $region --query 'length(Models)' --output text 2>/dev/null)
+    if [[ "$models" != "0" && "$models" != "None" ]]; then
+        echo -e "${RED}  Models: $models${NC}"
+        aws sagemaker list-models --region $region --output table 2>/dev/null
+        TOTAL_MODELS=$((TOTAL_MODELS + models))
+        has_resources=true
+    fi
+    
+    # Check Endpoints
+    local endpoints=$(aws sagemaker list-endpoints --region $region --query 'length(Endpoints)' --output text 2>/dev/null)
+    if [[ "$endpoints" != "0" && "$endpoints" != "None" ]]; then
+        echo -e "${RED}  Endpoints: $endpoints${NC}"
+        aws sagemaker list-endpoints --region $region --output table 2>/dev/null
+        TOTAL_ENDPOINTS=$((TOTAL_ENDPOINTS + endpoints))
+        has_resources=true
+    fi
+    
+    # Check Endpoint Configurations
+    local endpoint_configs=$(aws sagemaker list-endpoint-configs --region $region --query 'length(EndpointConfigs)' --output text 2>/dev/null)
+    if [[ "$endpoint_configs" != "0" && "$endpoint_configs" != "None" ]]; then
+        echo -e "${RED}  Endpoint Configs: $endpoint_configs${NC}"
+        aws sagemaker list-endpoint-configs --region $region --output table 2>/dev/null
+        has_resources=true
+    fi
+    
+    # Check Experiments
+    local experiments=$(aws sagemaker list-experiments --region $region --query 'length(ExperimentSummaries)' --output text 2>/dev/null)
+    if [[ "$experiments" != "0" && "$experiments" != "None" ]]; then
+        echo -e "${RED}  Experiments: $experiments${NC}"
+        aws sagemaker list-experiments --region $region --output table 2>/dev/null
+        TOTAL_EXPERIMENTS=$((TOTAL_EXPERIMENTS + experiments))
+        has_resources=true
+    fi
+    
+    # Check Trials
+    local trials=$(aws sagemaker list-trials --region $region --query 'length(TrialSummaries)' --output text 2>/dev/null)
+    if [[ "$trials" != "0" && "$trials" != "None" ]]; then
+        echo -e "${RED}  Trials: $trials${NC}"
+        aws sagemaker list-trials --region $region --output table 2>/dev/null
+        TOTAL_TRIALS=$((TOTAL_TRIALS + trials))
+        has_resources=true
+    fi
+    
+    # Check Trial Components
+    local trial_components=$(aws sagemaker list-trial-components --region $region --query 'length(TrialComponentSummaries)' --output text 2>/dev/null)
+    if [[ "$trial_components" != "0" && "$trial_components" != "None" ]]; then
+        echo -e "${RED}  Trial Components: $trial_components${NC}"
+        aws sagemaker list-trial-components --region $region --output table 2>/dev/null
+        TOTAL_TRIAL_COMPONENTS=$((TOTAL_TRIAL_COMPONENTS + trial_components))
+        has_resources=true
+    fi
+    
+    # Check Associations
+    local associations=$(aws sagemaker list-associations --region $region --query 'length(AssociationSummaries)' --output text 2>/dev/null)
+    if [[ "$associations" != "0" && "$associations" != "None" ]]; then
+        echo -e "${RED}  Associations: $associations${NC}"
+        aws sagemaker list-associations --region $region --output table 2>/dev/null
+        TOTAL_ASSOCIATIONS=$((TOTAL_ASSOCIATIONS + associations))
+        has_resources=true
+    fi
+    
+    # Check Actions
+    local actions=$(aws sagemaker list-actions --region $region --query 'length(ActionSummaries)' --output text 2>/dev/null)
+    if [[ "$actions" != "0" && "$actions" != "None" ]]; then
+        echo -e "${RED}  Actions: $actions${NC}"
+        aws sagemaker list-actions --region $region --output table 2>/dev/null
+        has_resources=true
+    fi
+    
+    # Check Contexts
+    local contexts=$(aws sagemaker list-contexts --region $region --query 'length(ContextSummaries)' --output text 2>/dev/null)
+    if [[ "$contexts" != "0" && "$contexts" != "None" ]]; then
+        echo -e "${RED}  Contexts: $contexts${NC}"
+        aws sagemaker list-contexts --region $region --output table 2>/dev/null
+        has_resources=true
+    fi
+    
+    # Check Training Jobs
+    local training_jobs=$(aws sagemaker list-training-jobs --region $region --query 'length(TrainingJobSummaries)' --output text 2>/dev/null)
+    if [[ "$training_jobs" != "0" && "$training_jobs" != "None" ]]; then
+        echo -e "${RED}  Training Jobs: $training_jobs${NC}"
+        aws sagemaker list-training-jobs --region $region --output table 2>/dev/null
+        has_resources=true
+    fi
+    
+    # Check Domains
+    local domains=$(aws sagemaker list-domains --region $region --query 'length(Domains)' --output text 2>/dev/null)
+    if [[ "$domains" != "0" && "$domains" != "None" ]]; then
+        echo -e "${RED}  Domains: $domains${NC}"
+        aws sagemaker list-domains --region $region --output table 2>/dev/null
+        has_resources=true
+    fi
+    
+    # Check Pipelines
+    local pipelines=$(aws sagemaker list-pipelines --region $region --query 'length(PipelineSummaries)' --output text 2>/dev/null)
+    if [[ "$pipelines" != "0" && "$pipelines" != "None" ]]; then
+        echo -e "${RED}  Pipelines: $pipelines${NC}"
+        aws sagemaker list-pipelines --region $region --output table 2>/dev/null
+        has_resources=true
+    fi
+    
+    # Check SageMaker S3 buckets (buckets with sagemaker in the name)
+    echo -e "${BLUE}  Checking SageMaker S3 buckets...${NC}"
+    aws s3 ls --region $region 2>/dev/null | grep -i sagemaker | while read bucket_info; do
+        bucket_name=$(echo $bucket_info | awk '{print $3}')
+        if [ ! -z "$bucket_name" ]; then
+            echo -e "${RED}    S3 Bucket: $bucket_name${NC}"
+            # Check bucket size
+            aws s3 ls s3://$bucket_name --recursive --summarize 2>/dev/null | tail -2
+            TOTAL_S3_BUCKETS=$((TOTAL_S3_BUCKETS + 1))
+            has_resources=true
+        fi
+    done
+    
+    if [ "$has_resources" = true ]; then
+        REGIONS_WITH_RESOURCES=$((REGIONS_WITH_RESOURCES + 1))
+        echo -e "${GREEN}  ✓ Found resources in $region${NC}"
+    else
+        echo -e "  ✓ No SageMaker resources found in $region"
+    fi
+    
+    echo ""
+}
+
+# Check each region
+for region in $REGIONS; do
+    check_region $region
+done
+
+# Summary
+echo -e "${BLUE}=== SUMMARY ===${NC}"
+echo -e "${YELLOW}Regions with SageMaker resources: $REGIONS_WITH_RESOURCES${NC}"
+echo -e "${RED}Total Artifacts: $TOTAL_ARTIFACTS${NC}"
+echo -e "${RED}Total Models: $TOTAL_MODELS${NC}"
+echo -e "${RED}Total Endpoints: $TOTAL_ENDPOINTS${NC}"
+echo -e "${RED}Total Experiments: $TOTAL_EXPERIMENTS${NC}"
+echo -e "${RED}Total Trials: $TOTAL_TRIALS${NC}"
+echo -e "${RED}Total Trial Components: $TOTAL_TRIAL_COMPONENTS${NC}"
+echo -e "${RED}Total Associations: $TOTAL_ASSOCIATIONS${NC}"
+echo -e "${RED}Total SageMaker S3 Buckets: $TOTAL_S3_BUCKETS${NC}"
+
+# Generate cleanup commands
+if [[ $TOTAL_ARTIFACTS -gt 0 || $TOTAL_MODELS -gt 0 || $TOTAL_ENDPOINTS -gt 0 ]]; then
+    echo ""
+    echo -e "${YELLOW}=== CLEANUP COMMANDS ===${NC}"
+    echo "To clean up resources, run these commands for each region with resources:"
+    echo ""
+    
+    for region in $REGIONS; do
+        # Quick check if region has resources
+        local has_any=$(aws sagemaker list-artifacts --region $region --query 'length(ArtifactSummaries)' --output text 2>/dev/null)
+        if [[ "$has_any" != "0" && "$has_any" != "None" ]]; then
+            echo -e "${BLUE}# Cleanup commands for $region:${NC}"
+            echo "aws sagemaker list-associations --region $region --output json | jq -r '.AssociationSummaries[] | \"aws sagemaker delete-association --source-arn \\(.SourceArn) --destination-arn \\(.DestinationArn) --region $region\"'"
+            echo "aws sagemaker list-trial-components --region $region --query 'TrialComponentSummaries[].TrialComponentName' --output text | tr '\\t' '\\n' | xargs -I {} aws sagemaker delete-trial-component --trial-component-name {} --region $region"
+            echo "aws sagemaker list-artifacts --region $region --query 'ArtifactSummaries[].ArtifactArn' --output text | tr '\\t' '\\n' | xargs -I {} aws sagemaker delete-artifact --artifact-arn {} --region $region"
+            echo ""
+        fi
+    done
+fi
+
+echo -e "${GREEN}Scan complete!${NC}"
