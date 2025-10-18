@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'RAG Chatbot for Portfolio Website using Amazon Bedrock'
+
+Parameters:
+  KnowledgeBaseBucketName:
+    Type: String
+    Description: 'S3 bucket containing your personal knowledge base documents'
+    Default: 'esperance-portfolio-knowledge-base'
+    
+  WebsiteDomain:
+    Type: String
+    Description: 'Your website domain for CORS configuration'
+    Default: 'https://esperance-brooks.com'
+
+Resources:
+  # S3 Bucket for Knowledge Base
+  KnowledgeBaseBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${KnowledgeBaseBucketName}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # OpenSearch Serverless Collection for Vector Store
+  OpenSearchCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    Properties:
+      Name: !Sub '${AWS::StackName}-knowledge-vectors'
+      Type: VECTORSEARCH
+      Description: 'Vector store for portfolio chatbot knowledge base'
+
+  # OpenSearch Serverless Security Policy
+  OpenSearchSecurityPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub '${AWS::StackName}-security-policy'
+      Type: encryption
+      Policy: !Sub |
+        {
+          "Rules": [
+            {
+              "ResourceType": "collection",
+              "Resource": ["collection/${AWS::StackName}-knowledge-vectors"]
+            }
+          ],
+          "AWSOwnedKey": true
+        }
+
+  # IAM Role for Bedrock Knowledge Base
+  BedrockKnowledgeBaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockKnowledgeBasePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${KnowledgeBaseBucket}/*'
+                  - !GetAtt KnowledgeBaseBucket.Arn
+              - Effect: Allow
+                Action:
+                  - aoss:APIAccessAll
+                Resource: !Sub 'arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/*'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: '*'
+
+  # Lambda Function for Chatbot API
+  ChatbotLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-chatbot'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Timeout: 30
+      MemorySize: 512
+      Role: !GetAtt ChatbotLambdaRole.Arn
+      Environment:
+        Variables:
+          KNOWLEDGE_BASE_ID: !Ref BedrockKnowledgeBase
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          
+          bedrock_agent = boto3.client('bedrock-agent-runtime')
+          
+          def lambda_handler(event, context):
+              try:
+                  # Parse the request
+                  body = json.loads(event['body']) if event.get('body') else {}
+                  question = body.get('question', '')
+                  session_id = body.get('sessionId', 'default-session')
+                  
+                  if not question:
+                      return {
+                          'statusCode': 400,
+                          'headers': {
+                              'Access-Control-Allow-Origin': os.environ.get('WEBSITE_DOMAIN', '*'),
+                              'Access-Control-Allow-Headers': 'Content-Type',
+                              'Access-Control-Allow-Methods': 'POST, OPTIONS'
+                          },
+                          'body': json.dumps({'error': 'Question is required'})
+                      }
+                  
+                  # Query the knowledge base
+                  response = bedrock_agent.retrieve_and_generate(
+                      input={
+                          'text': question
+                      },
+                      retrieveAndGenerateConfiguration={
+                          'type': 'KNOWLEDGE_BASE',
+                          'knowledgeBaseConfiguration': {
+                              'knowledgeBaseId': os.environ['KNOWLEDGE_BASE_ID'],
+                              'modelArn': 'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0'
+                          }
+                      },
+                      sessionId=session_id
+                  )
+                  
+                  answer = response['output']['text']
+                  
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Access-Control-Allow-Origin': os.environ.get('WEBSITE_DOMAIN', '*'),
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'POST, OPTIONS'
+                      },
+                      'body': json.dumps({
+                          'answer': answer,
+                          'sessionId': session_id
+                      })
+                  }
+                  
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Access-Control-Allow-Origin': os.environ.get('WEBSITE_DOMAIN', '*'),
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'POST, OPTIONS'
+                      },
+                      'body': json.dumps({'error': 'Internal server error'})
+                  }
+
+  # IAM Role for Lambda
+  ChatbotLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock-agent-runtime:Retrieve
+                  - bedrock-agent-runtime:RetrieveAndGenerate
+                Resource: '*'
+
+  # API Gateway
+  ChatbotAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AWS::StackName}-chatbot-api'
+      Description: 'API for portfolio chatbot'
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway Resource
+  ChatbotResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ChatbotAPI
+      ParentId: !GetAtt ChatbotAPI.RootResourceId
+      PathPart: 'chat'
+
+  # API Gateway Method
+  ChatbotMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ChatbotAPI
+      ResourceId: !Ref ChatbotResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChatbotLambda.Arn}/invocations'
+
+  # CORS Options Method
+  ChatbotOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ChatbotAPI
+      ResourceId: !Ref ChatbotResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: !Sub "'${WebsiteDomain}'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Lambda Permission for API Gateway
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ChatbotLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ChatbotAPI}/*/*'
+
+  # API Gateway Deployment
+  ChatbotAPIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ChatbotMethod
+      - ChatbotOptionsMethod
+    Properties:
+      RestApiId: !Ref ChatbotAPI
+      StageName: 'prod'
+
+Outputs:
+  ChatbotAPIEndpoint:
+    Description: 'API Gateway endpoint for the chatbot'
+    Value: !Sub 'https://${ChatbotAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/chat'
+    Export:
+      Name: !Sub '${AWS::StackName}-ChatbotAPIEndpoint'
+
+  KnowledgeBaseBucket:
+    Description: 'S3 bucket for knowledge base documents'
+    Value: !Ref KnowledgeBaseBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-KnowledgeBaseBucket'
